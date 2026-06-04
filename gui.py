@@ -58,19 +58,31 @@ import cli
 PROGRESS_LINE_RE: re.Pattern[str] = re.compile(r"\[(?P<bar>[#-]{4,})\]\s*(?P<pct>\d{1,3})%\s*(?P<label>[^\r\n]*)")
 
 def read_stream_by_lines(stream):
-    buffer = []
-    while True:
-        char = stream.read(1)
-        if not char:
-            if buffer:
-                yield "".join(buffer)
-            break
-        if char in ('\r', '\n'):
-            if buffer:
-                yield "".join(buffer)
-                buffer = []
+    """Yield logical lines from a stream, deduplicating \\r-overwrite progress frames.
+
+    Uses readline() rather than read(1) to avoid per-character overhead.
+    Consecutive lines that would overwrite the previous terminal line (i.e.
+    lines produced by a \\r-only progress bar) are collapsed so only the most
+    recent frame for a given prefix is forwarded to the GUI log queue.
+    """
+    last_cr_line: str | None = None
+    for raw in stream:
+        # raw still contains the trailing newline / CR from readline
+        stripped = raw.rstrip('\r\n')
+        if not stripped:
+            continue
+        # Detect whether the original line ended with \r only (progress frame)
+        ends_cr = raw.endswith('\r') and not raw.endswith('\n')
+        if ends_cr:
+            # Accumulate, only emit when a non-CR line follows or stream ends
+            last_cr_line = stripped
         else:
-            buffer.append(char)
+            if last_cr_line is not None:
+                yield last_cr_line
+                last_cr_line = None
+            yield stripped
+    if last_cr_line is not None:
+        yield last_cr_line
 
 class GuiLogRedirect(io.TextIOBase):
     """Thread-safe redirector that feeds a Tkinter text widget via a queue."""
@@ -238,6 +250,14 @@ class PS5ContainerBuilderApp:
         )
         self.batch_checkbox.pack(side="left", padx=10)
 
+        self.verify_var = tk.BooleanVar(value=False)
+        self.verify_checkbox = ctk.CTkCheckBox(
+            self.options_frame, 
+            text="Verify PFS image integrity", 
+            variable=self.verify_var
+        )
+        self.verify_checkbox.pack(side="left", padx=10)
+
     def _build_progress(self) -> None:
         self.progress_frame = ctk.CTkFrame(self.root)
         self.progress_frame.grid(row=2, column=0, padx=12, pady=6, sticky="ew")
@@ -332,6 +352,7 @@ class PS5ContainerBuilderApp:
         path = filedialog.askopenfilename(
             initialdir=initial,
             filetypes=[
+                ("exFAT & RAR files", "*.exfat *.rar"),
                 ("exFAT files", "*.exfat"),
                 ("ZIP files", "*.zip"),
                 ("RAR files", "*.rar"),
@@ -373,19 +394,28 @@ class PS5ContainerBuilderApp:
     def _start_completion_polling(self) -> None:
         self._poll_completion_queue()
 
+    # Maximum log items processed per poll tick.  Keeps the main thread
+    # responsive even when the subprocess emits output in large bursts.
+    _LOG_DRAIN_LIMIT = 200
+
     def _poll_log_queue(self) -> None:
         if self.is_closing:
             return
         chunks = []
         try:
-            while True:
+            for _ in range(self._LOG_DRAIN_LIMIT):
                 chunks.append(self.log_queue.get_nowait())
         except queue.Empty:
             pass
         if chunks:
             for text, tag in chunks:
                 self._append_log(text, tag)
-        self.log_after_id = self.root.after(100, self._poll_log_queue)
+        # If we hit the drain limit the queue may still have items;
+        # reschedule immediately so we don't introduce a 100 ms gap,
+        # but still yield control back to the event loop between batches.
+        more_pending = len(chunks) == self._LOG_DRAIN_LIMIT
+        delay = 0 if more_pending else 100
+        self.log_after_id = self.root.after(delay, self._poll_log_queue)
 
     def _poll_progress_queue(self) -> None:
         if self.is_closing:
@@ -416,33 +446,56 @@ class PS5ContainerBuilderApp:
             self._on_worker_done(name, is_success)
         self.completion_after_id = self.root.after(100, self._poll_completion_queue)
 
+    # Terms that trigger special tag colouring — compiled once for speed.
+    _ERROR_TERMS   = ("error:", "failed", "exception", "failed:", "builderror", "unsupported")
+    _WARNING_TERMS = ("warning", "warn", "stale")
+    _SUCCESS_TERMS = ("successfully", "completed", "passed")
+    _SECTION_NAMES = frozenset({
+        "PFS Image Builder - Parameters",
+        "Build Summary",
+        "PFS Check Report",
+        "Build Details",
+    })
+
     def _append_log(self, text: str, source_tag: str = "info") -> None:
         self.log_text.configure(state="normal")
         lines = text.split("\n")
+        # Accumulate plain "info" lines so they can be inserted in one call,
+        # which is far cheaper than one Tkinter insert per line.
+        plain_buf: list[str] = []
+
+        def _flush_plain() -> None:
+            if plain_buf:
+                self.log_text.insert("end", "\n".join(plain_buf) + "\n", "info")
+                plain_buf.clear()
+
         for i, line in enumerate(lines):
             suffix = "\n" if i < len(lines) - 1 else ""
             stripped = line.strip()
 
             if stripped.startswith("===") or stripped.endswith("==="):
+                _flush_plain()
                 self.log_text.insert("end", line + suffix, "header")
-            elif stripped in (
-                "PFS Image Builder - Parameters",
-                "Build Summary",
-                "PFS Check Report",
-                "Build Details",
-            ):
+            elif stripped in self._SECTION_NAMES:
+                _flush_plain()
                 self.log_text.insert("end", line + suffix, "section")
-            elif any(term in line.lower() for term in ("error:", "failed", "exception", "failed:", "builderror", "unsupported")):
+            elif any(term in line.lower() for term in self._ERROR_TERMS):
+                _flush_plain()
                 self.log_text.insert("end", line + suffix, "error")
-            elif any(term in line.lower() for term in ("warning", "warn", "stale")):
+            elif any(term in line.lower() for term in self._WARNING_TERMS):
+                _flush_plain()
                 self.log_text.insert("end", line + suffix, "warning")
-            elif any(term in line.lower() for term in ("successfully", "completed", "passed")):
+            elif any(term in line.lower() for term in self._SUCCESS_TERMS):
+                _flush_plain()
                 self.log_text.insert("end", line + suffix, "success")
             elif source_tag == "error":
+                _flush_plain()
                 self.log_text.insert("end", line + suffix, "error")
             else:
-                self.log_text.insert("end", line + suffix, "info")
+                # Plain info line — buffer it
+                plain_buf.append(line)
 
+        _flush_plain()
         self.log_text.configure(state="disabled")
         self.log_text.see("end")
 
@@ -492,6 +545,7 @@ class PS5ContainerBuilderApp:
         keep_pfs = self.keep_pfs_var.get()
         batch = self.batch_var.get()
         password = self.password_var.get()
+        verify = self.verify_var.get()
 
         if not source:
             print("[ERROR] Source path must be specified.")
@@ -636,6 +690,10 @@ class PS5ContainerBuilderApp:
 
                     if item.is_file() and item.suffix.lower() == '.exfat':
                         # Direct exFAT to ffpfsc
+                        try:
+                            self.progress_queue.put_nowait((0.0, "Waiting for compression"))
+                        except queue.Full:
+                            pass
                         success = self.run_command_stream(
                             mkpfs_cmd_base + ["pack", "file", "--compress", "--version", "PS5", "--inode-bits", "32", str(item), str(current_ffpfs_path)],
                             cwd=mkpfs_cwd
@@ -647,8 +705,12 @@ class PS5ContainerBuilderApp:
 
                             # 1. Uncompressed PFS build
                             print(f"[INFO] Packing folder {item.name} to uncompressed PFS image...")
+                            cmd = mkpfs_cmd_base + ["pack", "folder", "--no-compress", "--no-adjust-output-file-extension", "--version", "PS5", "--inode-bits", "32"]
+                            if verify:
+                                cmd.append("--verify")
+                            cmd.extend([str(item), str(temp_pfs)])
                             success = self.run_command_stream(
-                                mkpfs_cmd_base + ["pack", "folder", "--no-compress", "--no-adjust-output-file-extension", "--version", "PS5", "--inode-bits", "32", "--verify", str(item), str(temp_pfs)],
+                                cmd,
                                 cwd=mkpfs_cwd
                             )
                             
@@ -657,6 +719,10 @@ class PS5ContainerBuilderApp:
 
                             # 2. Compression to .ffpfsc
                             print(f"[INFO] Compressing nested PFS image to outer container {current_ffpfs_path.name}...")
+                            try:
+                                self.progress_queue.put_nowait((0.0, "Waiting for compression"))
+                            except queue.Full:
+                                pass
                             success = self.run_command_stream(
                                 mkpfs_cmd_base + ["pack", "file", "--compress", "--version", "PS5", "--inode-bits", "32", str(temp_pfs), str(current_ffpfs_path)],
                                 cwd=mkpfs_cwd
@@ -702,6 +768,8 @@ class PS5ContainerBuilderApp:
                 **popen_kwargs,
             )
 
+            # Use readline()-based iteration; read_stream_by_lines already
+            # uses readline() internally and handles \r deduplication.
             for line in read_stream_by_lines(self.current_process.stdout):
                 print(line)
 
