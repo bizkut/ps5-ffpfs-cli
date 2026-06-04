@@ -1,6 +1,16 @@
 #!/Users/bizkut/Downloads/PS5/.venv/bin/python
 from __future__ import annotations
 import sys
+
+# Intercept if called as mkpfs sub-command in bundled mode
+if len(sys.argv) > 1 and sys.argv[1] == "--mkpfs-internal":
+    try:
+        from mkpfs.cli import cli_mkpfs_main
+        sys.exit(cli_mkpfs_main(sys.argv[2:]))
+    except Exception as e:
+        print(f"[ERROR] Internal MkPFS call failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
 import os
 import io
 import re
@@ -433,6 +443,11 @@ class PS5ContainerBuilderApp:
         # Locate MkPFS
         mkpfs_cmd_base = None
         mkpfs_cwd = None
+
+        if getattr(sys, "frozen", False):
+            mkpfs_cmd_base = [sys.executable, "--mkpfs-internal"]
+            mkpfs_cwd = None
+            print("[INFO] Running in packaged/frozen environment. Using internal MkPFS bundle.")
 
         # 1. Prioritize any local workspace found in sibling folders containing a mkpfs package
         parent_dir = Path(__file__).resolve().parent.parent
