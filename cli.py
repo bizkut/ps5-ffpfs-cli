@@ -1,6 +1,9 @@
 #!/Users/bizkut/Downloads/PS5/.venv/bin/python
 import sys
 
+import multiprocessing as _mp
+_mp.freeze_support()  # Required for mp.Pool in PyInstaller frozen builds
+
 # Intercept if called as mkpfs sub-command in bundled mode
 if len(sys.argv) > 1 and sys.argv[1] == "--mkpfs-internal":
     try:

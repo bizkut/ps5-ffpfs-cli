@@ -135,12 +135,12 @@ jobs:
             --hidden-import unrar \
             --hidden-import unrar.rarfile \
             --hidden-import unrar._unrar \
+            --hidden-import multiprocessing \
             --collect-data tkinter \
             --collect-binaries tkinter \
             --collect-data customtkinter \
             --collect-data mkpfs \
             --collect-binaries mkpfs \
-            --collect-binaries unrar \
             --distpath dist-gui \
             gui.py
 
@@ -172,12 +172,12 @@ jobs:
             --hidden-import unrar \
             --hidden-import unrar.rarfile \
             --hidden-import unrar._unrar \
+            --hidden-import multiprocessing \
             --collect-data tkinter \
             --collect-binaries tkinter \
             --collect-data customtkinter \
             --collect-data mkpfs \
             --collect-binaries mkpfs \
-            --collect-binaries unrar \
             --distpath dist-gui \
             gui.py
 
