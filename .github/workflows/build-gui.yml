@@ -55,6 +55,29 @@ jobs:
         run: |
           uv pip install --system ./unrar
 
+      - name: Copy compiled unrar extension to source tree
+        shell: python
+        run: |
+          import os
+          import sys
+          import shutil
+          import unrar
+
+          unrar_dir = os.path.dirname(unrar.__file__)
+          src_dir = os.path.join(os.getcwd(), 'unrar')
+
+          for fname in os.listdir(unrar_dir):
+              if fname.startswith('_unrar') and (fname.endswith('.so') or fname.endswith('.pyd')):
+                  src = os.path.join(unrar_dir, fname)
+                  dst = os.path.join(src_dir, fname)
+                  shutil.copy2(src, dst)
+                  print(f"Copied {src} -> {dst}")
+                  break
+          else:
+              print(f"ERROR: no compiled _unrar extension found in {unrar_dir}")
+              print(f"Contents: {os.listdir(unrar_dir)}")
+              sys.exit(1)
+
       - name: Generate dummy assets/icon.png
         shell: bash
         run: |
