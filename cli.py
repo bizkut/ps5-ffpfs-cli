@@ -130,6 +130,7 @@ def main():
     parser.add_argument("--batch", action="store_true", help="Process multiple game folders/files into multiple images. 'output' will be treated as the output directory.")
     parser.add_argument("--gui", action="store_true", help="Launch the graphical user interface")
     parser.add_argument("-f", "--force", "--overwrite", dest="overwrite", action="store_true", help="Overwrite existing files without prompting")
+    parser.add_argument("--password", type=str, help="Optional password for ZIP/RAR archives")
     
     args = parser.parse_args()
     
@@ -164,112 +165,132 @@ def main():
         print(f"[ERROR] Source path does not exist: {game_folder}")
         sys.exit(1)
         
-    game_items = find_game_items(game_folder, args.batch)
+    is_archive = any(game_folder.name.lower().endswith(ext) for ext in (".zip", ".rar", ".r00", ".001", "part1.rar"))
     
-    if args.batch:
-        if not ffpfs_path.exists():
-            ffpfs_path.mkdir(parents=True, exist_ok=True)
-        elif not ffpfs_path.is_dir():
-            print(f"[ERROR] Output path {ffpfs_path} must be a directory when using --batch.")
-            sys.exit(1)
-    
-    # Locate MkPFS
-    mkpfs_cmd_base = None
-    mkpfs_cwd = None
-    
-    if getattr(sys, "frozen", False):
-        mkpfs_cmd_base = [sys.executable, "--mkpfs-internal"]
-        mkpfs_cwd = None
-        print("[INFO] Running in packaged/frozen environment. Using internal MkPFS bundle.")
-    
-    # 1. Prioritize any local workspace found in sibling folders containing a mkpfs package
-    parent_dir = Path(__file__).resolve().parent.parent
-    try:
-        for sibling in parent_dir.iterdir():
-            if sibling.is_dir() and (sibling / "mkpfs" / "__main__.py").is_file():
-                mkpfs_cmd_base = [sys.executable, "-m", "mkpfs"]
-                mkpfs_cwd = str(sibling)
-                print(f"[INFO] Using local workspace directory at {sibling}")
-                break
-    except Exception:
-        pass
-    
-    # 2. Try system PATH
-    if mkpfs_cmd_base is None and shutil.which("mkpfs"):
-        mkpfs_cmd_base = ["mkpfs"]
-    
-    # 3. Auto-install via pip if not found
-    if mkpfs_cmd_base is None:
-        print("[INFO] MkPFS not found. Installing automatically via pip...")
-        res = subprocess.run([sys.executable, "-m", "pip", "install", "mkpfs"], capture_output=True, text=True)
-        if res.returncode != 0:
-            print("[ERROR] Failed to install mkpfs. Please install it manually: pip install mkpfs")
-            print(res.stderr)
-            sys.exit(1)
-        print("[OK] MkPFS installed successfully.")
-        mkpfs_cmd_base = [sys.executable, "-m", "mkpfs"]
-        
-    ext = ".ffpfsc"
-    
-    for item in game_items:
-        title_id = get_title_id(item)
-        
-        if args.batch or ffpfs_path.is_dir():
-            current_ffpfs_path = ffpfs_path / f"{title_id}{ext}"
+    import contextlib
+    @contextlib.contextmanager
+    def prepare_source_path(path: Path):
+        if is_archive:
+            try:
+                from mkpfs.archive_pack import stage_archive_source_root
+                with stage_archive_source_root(archive_path=path, password=args.password) as temp_root:
+                    yield temp_root
+            except ImportError:
+                print("[ERROR] MkPFS library not found or does not support archives.")
+                sys.exit(1)
+            except Exception as e:
+                print(f"[ERROR] Failed to extract archive: {e}")
+                sys.exit(1)
         else:
-            current_ffpfs_path = ffpfs_path.with_suffix(ext)
+            yield path
+
+    with prepare_source_path(game_folder) as active_source_path:
+        game_items = find_game_items(active_source_path, args.batch)
         
         if args.batch:
-            print(f"\n[INFO] --- Processing batch item: {title_id} ({item.name}) ---")
+            if not ffpfs_path.exists():
+                ffpfs_path.mkdir(parents=True, exist_ok=True)
+            elif not ffpfs_path.is_dir():
+                print(f"[ERROR] Output path {ffpfs_path} must be a directory when using --batch.")
+                sys.exit(1)
+        
+        # Locate MkPFS
+        mkpfs_cmd_base = None
+        mkpfs_cwd = None
+        
+        if getattr(sys, "frozen", False):
+            mkpfs_cmd_base = [sys.executable, "--mkpfs-internal"]
+            mkpfs_cwd = None
+            print("[INFO] Running in packaged/frozen environment. Using internal MkPFS bundle.")
+        
+        # 1. Prioritize any local workspace found in sibling folders containing a mkpfs package
+        parent_dir = Path(__file__).resolve().parent.parent
+        try:
+            for sibling in parent_dir.iterdir():
+                if sibling.is_dir() and (sibling / "mkpfs" / "__main__.py").is_file():
+                    mkpfs_cmd_base = [sys.executable, "-m", "mkpfs"]
+                    mkpfs_cwd = str(sibling)
+                    print(f"[INFO] Using local workspace directory at {sibling}")
+                    break
+        except Exception:
+            pass
+        
+        # 2. Try system PATH
+        if mkpfs_cmd_base is None and shutil.which("mkpfs"):
+            mkpfs_cmd_base = ["mkpfs"]
+        
+        # 3. Auto-install via pip if not found
+        if mkpfs_cmd_base is None:
+            print("[INFO] MkPFS not found. Installing automatically via pip...")
+            res = subprocess.run([sys.executable, "-m", "pip", "install", "mkpfs"], capture_output=True, text=True)
+            if res.returncode != 0:
+                print("[ERROR] Failed to install mkpfs. Please install it manually: pip install mkpfs")
+                print(res.stderr)
+                sys.exit(1)
+            print("[OK] MkPFS installed successfully.")
+            mkpfs_cmd_base = [sys.executable, "-m", "mkpfs"]
             
-        if current_ffpfs_path.exists():
-            if args.overwrite:
-                print(f"[WARN] Output file already exists. Overwriting: {current_ffpfs_path}")
-                try:
-                    current_ffpfs_path.unlink()
-                except Exception as e:
-                    print(f"[ERROR] Failed to remove existing output file: {e}")
-                    sys.exit(1)
+        ext = ".ffpfsc"
+        
+        for item in game_items:
+            title_id = get_title_id(item)
+            
+            if args.batch or ffpfs_path.is_dir():
+                current_ffpfs_path = ffpfs_path / f"{title_id}{ext}"
             else:
-                print(f"[WARN] Output file already exists: {current_ffpfs_path}")
-                try:
-                    if sys.stdin.isatty():
-                        response = input("Overwrite existing file? [y/N]: ").strip().lower()
-                    else:
-                        print("[INFO] Non-interactive shell detected. Skipping overwrite.")
-                        response = 'n'
-                except (KeyboardInterrupt, EOFError):
-                    print("\n[INFO] Cancelled by user.")
-                    sys.exit(0)
-                if response not in ('y', 'yes'):
-                    print(f"[INFO] Skipping: {current_ffpfs_path.name}")
-                    continue
-                try:
-                    current_ffpfs_path.unlink()
-                except Exception as e:
-                    print(f"[ERROR] Failed to remove existing output file: {e}")
-                    sys.exit(1)
+                current_ffpfs_path = ffpfs_path.with_suffix(ext)
             
-        if item.is_file() and item.suffix.lower() == '.exfat':
-            # Direct exFAT file to compressed PFS (.ffpfsc) conversion
-            compress_file_to_ffpfsc(item, current_ffpfs_path, mkpfs_cmd_base, mkpfs_cwd)
-        else:
-            # Game folder: pack to uncompressed PFS first, then compress to .ffpfsc
-            with tempfile.TemporaryDirectory() as temp_dir:
-                temp_pfs = Path(temp_dir) / "pfs_image.dat"
+            if args.batch:
+                print(f"\n[INFO] --- Processing batch item: {title_id} ({item.name}) ---")
                 
-                # 1. Pack folder into the uncompressed PFS image
-                pack_folder_uncompressed(item, temp_pfs, mkpfs_cmd_base, mkpfs_cwd)
+            if current_ffpfs_path.exists():
+                if args.overwrite:
+                    print(f"[WARN] Output file already exists. Overwriting: {current_ffpfs_path}")
+                    try:
+                        current_ffpfs_path.unlink()
+                    except Exception as e:
+                        print(f"[ERROR] Failed to remove existing output file: {e}")
+                        sys.exit(1)
+                else:
+                    print(f"[WARN] Output file already exists: {current_ffpfs_path}")
+                    try:
+                        if sys.stdin.isatty():
+                            response = input("Overwrite existing file? [y/N]: ").strip().lower()
+                        else:
+                            print("[INFO] Non-interactive shell detected. Skipping overwrite.")
+                            response = 'n'
+                    except (KeyboardInterrupt, EOFError):
+                        print("\n[INFO] Cancelled by user.")
+                        sys.exit(0)
+                    if response not in ('y', 'yes'):
+                        print(f"[INFO] Skipping: {current_ffpfs_path.name}")
+                        continue
+                    try:
+                        current_ffpfs_path.unlink()
+                    except Exception as e:
+                        print(f"[ERROR] Failed to remove existing output file: {e}")
+                        sys.exit(1)
                 
-                # 2. Compress that PFS image file into the final .ffpfsc
-                compress_file_to_ffpfsc(temp_pfs, current_ffpfs_path, mkpfs_cmd_base, mkpfs_cwd)
-                
-                if args.keep_pfs:
-                    saved_pfs_path = current_ffpfs_path.parent / f"{title_id}_nested_pfs.dat"
-                    print(f"[INFO] Saving intermediate PFS image to {saved_pfs_path}...")
-                    shutil.copy2(temp_pfs, saved_pfs_path)
-                
-    print("\n[SUCCESS] All operations completed successfully!")
+            if item.is_file() and item.suffix.lower() == '.exfat':
+                # Direct exFAT file to compressed PFS (.ffpfsc) conversion
+                compress_file_to_ffpfsc(item, current_ffpfs_path, mkpfs_cmd_base, mkpfs_cwd)
+            else:
+                # Game folder: pack to uncompressed PFS first, then compress to .ffpfsc
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    temp_pfs = Path(temp_dir) / "pfs_image.dat"
+                    
+                    # 1. Pack folder into the uncompressed PFS image
+                    pack_folder_uncompressed(item, temp_pfs, mkpfs_cmd_base, mkpfs_cwd)
+                    
+                    # 2. Compress that PFS image file into the final .ffpfsc
+                    compress_file_to_ffpfsc(temp_pfs, current_ffpfs_path, mkpfs_cmd_base, mkpfs_cwd)
+                    
+                    if args.keep_pfs:
+                        saved_pfs_path = current_ffpfs_path.parent / f"{title_id}_nested_pfs.dat"
+                        print(f"[INFO] Saving intermediate PFS image to {saved_pfs_path}...")
+                        shutil.copy2(temp_pfs, saved_pfs_path)
+                    
+        print("\n[SUCCESS] All operations completed successfully!")
 
 if __name__ == "__main__":
     main()

@@ -142,6 +142,8 @@ class PS5ContainerBuilderApp:
         )
         self.source_entry.grid(row=0, column=1, padx=6, pady=10, sticky="ew")
         
+        self.source_var.trace_add("write", self._on_source_changed)
+        
         source_buttons = ctk.CTkFrame(fields_frame, fg_color="transparent")
         source_buttons.grid(row=0, column=2, padx=12, pady=10, sticky="w")
         
@@ -155,9 +157,9 @@ class PS5ContainerBuilderApp:
         
         browse_file_btn = ctk.CTkButton(
             source_buttons, 
-            text="Browse exFAT", 
+            text="Browse File", 
             width=110,
-            command=self._browse_exfat
+            command=self._browse_file
         )
         browse_file_btn.pack(side="left", padx=3)
         
@@ -181,13 +183,23 @@ class PS5ContainerBuilderApp:
         )
         browse_out_btn.grid(row=1, column=2, padx=12, pady=10, sticky="w")
         
+        # Password Field (Hidden by default)
+        self.password_label = ctk.CTkLabel(fields_frame, text="Password:", font=ctk.CTkFont(weight="bold"))
+        self.password_var = tk.StringVar()
+        self.password_entry = ctk.CTkEntry(
+            fields_frame, 
+            textvariable=self.password_var,
+            show="*",
+            placeholder_text="Archive Password (if any)"
+        )
+        
         # Options Row
-        options_frame = ctk.CTkFrame(fields_frame, fg_color="transparent")
-        options_frame.grid(row=2, column=1, columnspan=2, padx=6, pady=6, sticky="w")
+        self.options_frame = ctk.CTkFrame(fields_frame, fg_color="transparent")
+        self.options_frame.grid(row=2, column=1, columnspan=2, padx=6, pady=6, sticky="w")
         
         self.keep_pfs_var = tk.BooleanVar(value=False)
         self.keep_pfs_checkbox = ctk.CTkCheckBox(
-            options_frame, 
+            self.options_frame, 
             text="Keep intermediate nested PFS image (folders only)", 
             variable=self.keep_pfs_var
         )
@@ -195,7 +207,7 @@ class PS5ContainerBuilderApp:
         
         self.batch_var = tk.BooleanVar(value=False)
         self.batch_checkbox = ctk.CTkCheckBox(
-            options_frame, 
+            self.options_frame, 
             text="Batch Mode (process all subfolders/exfat files)", 
             variable=self.batch_var
         )
@@ -267,15 +279,28 @@ class PS5ContainerBuilderApp:
         self.log_text._textbox.tag_config("error", foreground="#f87171", font=("Courier", 11, "bold"))
         self.log_text._textbox.tag_config("info", foreground="#cbd5e1")
 
+    def _on_source_changed(self, *args) -> None:
+        src = self.source_var.get().lower()
+        # Supported archive extensions from mkpfs
+        if any(src.endswith(ext) for ext in (".zip", ".rar", ".r00", ".001", "part1.rar")):
+            self.password_label.grid(row=2, column=0, padx=12, pady=10, sticky="e")
+            self.password_entry.grid(row=2, column=1, padx=6, pady=10, sticky="w")
+            self.options_frame.grid(row=3, column=1, columnspan=2, padx=6, pady=6, sticky="w")
+        else:
+            self.password_label.grid_forget()
+            self.password_entry.grid_forget()
+            self.password_var.set("")
+            self.options_frame.grid(row=2, column=1, columnspan=2, padx=6, pady=6, sticky="w")
+
     def _browse_folder(self) -> None:
         path = filedialog.askdirectory()
         if path:
             self.source_var.set(path)
             
-    def _browse_exfat(self) -> None:
+    def _browse_file(self) -> None:
         path = filedialog.askopenfilename(
             filetypes=[
-                ("exFAT image files", "*.exfat"),
+                ("Supported files", "*.exfat;*.zip;*.rar;*.r00;*.001"),
                 ("All files", "*.*")
             ]
         )
@@ -427,6 +452,7 @@ class PS5ContainerBuilderApp:
         output = self.output_var.get().strip()
         keep_pfs = self.keep_pfs_var.get()
         batch = self.batch_var.get()
+        password = self.password_var.get()
 
         if not source:
             print("[ERROR] Source path must be specified.")
@@ -475,92 +501,116 @@ class PS5ContainerBuilderApp:
             print("[OK] MkPFS installed successfully.")
             mkpfs_cmd_base = [sys.executable, "-m", "mkpfs"]
 
-        # Discover items using cli logic
+        # Handle Archives using MkPFS logic
+        is_archive = any(source.lower().endswith(ext) for ext in (".zip", ".rar", ".r00", ".001", "part1.rar"))
+        
+        import contextlib
+        @contextlib.contextmanager
+        def prepare_source_path(path: Path):
+            if is_archive:
+                try:
+                    from mkpfs.archive_pack import stage_archive_source_root
+                    with stage_archive_source_root(archive_path=path, password=password) as temp_root:
+                        yield temp_root
+                except ImportError:
+                    print("[ERROR] MkPFS library not found or does not support archives.")
+                    raise
+                except Exception as e:
+                    print(f"[ERROR] Failed to extract archive: {e}")
+                    raise
+            else:
+                yield path
+
         try:
-            game_items = cli.find_game_items(source_path, batch)
-        except SystemExit:
-            print("[ERROR] Discovery failed. Check source directory settings.")
-            return False
+            with prepare_source_path(source_path) as active_source_path:
+                # Discover items using cli logic
+                try:
+                    game_items = cli.find_game_items(active_source_path, batch)
+                except SystemExit:
+                    print("[ERROR] Discovery failed. Check source directory settings.")
+                    return False
 
-        if batch:
-            if not ffpfs_path.exists():
-                ffpfs_path.mkdir(parents=True, exist_ok=True)
-            elif not ffpfs_path.is_dir():
-                print(f"[ERROR] Output path {ffpfs_path} must be a directory when using --batch.")
-                return False
-
-        ext = ".ffpfsc"
-        success = True
-
-        for item in game_items:
-            if self.is_cancelled:
-                break
-                
-            title_id = cli.get_title_id(item)
-            if batch or ffpfs_path.is_dir():
-                current_ffpfs_path = ffpfs_path / f"{title_id}{ext}"
-            else:
-                current_ffpfs_path = ffpfs_path.with_suffix(ext)
-
-            if batch:
-                print(f"\n=== Processing batch item: {title_id} ({item.name}) ===\n")
-
-            if current_ffpfs_path.exists():
-                print(f"[WARN] Output file already exists: {current_ffpfs_path}")
-                if self.ask_overwrite_confirmation(current_ffpfs_path):
-                    print(f"[INFO] Overwriting existing file: {current_ffpfs_path}")
-                    try:
-                        current_ffpfs_path.unlink()
-                    except Exception as e:
-                        print(f"[ERROR] Failed to remove existing output file: {e}")
+                if batch:
+                    if not ffpfs_path.exists():
+                        ffpfs_path.mkdir(parents=True, exist_ok=True)
+                    elif not ffpfs_path.is_dir():
+                        print(f"[ERROR] Output path {ffpfs_path} must be a directory when using --batch.")
                         return False
-                else:
-                    print(f"[INFO] Skipping: {current_ffpfs_path.name}")
-                    continue
 
-            if item.is_file() and item.suffix.lower() == '.exfat':
-                # Direct exFAT to ffpfsc
-                success = self.run_command_stream(
-                    mkpfs_cmd_base + ["pack", "file", "--compress", "--version", "PS5", "--inode-bits", "32", str(item), str(current_ffpfs_path)],
-                    cwd=mkpfs_cwd
-                )
-            else:
-                # Game folder packing
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    temp_pfs = Path(temp_dir) / "pfs_image.dat"
+                ext = ".ffpfsc"
+                success = True
 
-                    # 1. Uncompressed PFS build
-                    print(f"[INFO] Packing folder {item.name} to uncompressed PFS image...")
-                    success = self.run_command_stream(
-                        mkpfs_cmd_base + ["pack", "folder", "--no-compress", "--no-adjust-output-file-extension", "--version", "PS5", "--inode-bits", "32", "--verify", str(item), str(temp_pfs)],
-                        cwd=mkpfs_cwd
-                    )
-                    
-                    if not success or self.is_cancelled:
+                for item in game_items:
+                    if self.is_cancelled:
+                        break
+                        
+                    title_id = cli.get_title_id(item)
+                    if batch or ffpfs_path.is_dir():
+                        current_ffpfs_path = ffpfs_path / f"{title_id}{ext}"
+                    else:
+                        current_ffpfs_path = ffpfs_path.with_suffix(ext)
+
+                    if batch:
+                        print(f"\n=== Processing batch item: {title_id} ({item.name}) ===\n")
+
+                    if current_ffpfs_path.exists():
+                        print(f"[WARN] Output file already exists: {current_ffpfs_path}")
+                        if self.ask_overwrite_confirmation(current_ffpfs_path):
+                            print(f"[INFO] Overwriting existing file: {current_ffpfs_path}")
+                            try:
+                                current_ffpfs_path.unlink()
+                            except Exception as e:
+                                print(f"[ERROR] Failed to remove existing output file: {e}")
+                                return False
+                        else:
+                            print(f"[INFO] Skipping: {current_ffpfs_path.name}")
+                            continue
+
+                    if item.is_file() and item.suffix.lower() == '.exfat':
+                        # Direct exFAT to ffpfsc
+                        success = self.run_command_stream(
+                            mkpfs_cmd_base + ["pack", "file", "--compress", "--version", "PS5", "--inode-bits", "32", str(item), str(current_ffpfs_path)],
+                            cwd=mkpfs_cwd
+                        )
+                    else:
+                        # Game folder packing
+                        with tempfile.TemporaryDirectory() as temp_dir:
+                            temp_pfs = Path(temp_dir) / "pfs_image.dat"
+
+                            # 1. Uncompressed PFS build
+                            print(f"[INFO] Packing folder {item.name} to uncompressed PFS image...")
+                            success = self.run_command_stream(
+                                mkpfs_cmd_base + ["pack", "folder", "--no-compress", "--no-adjust-output-file-extension", "--version", "PS5", "--inode-bits", "32", "--verify", str(item), str(temp_pfs)],
+                                cwd=mkpfs_cwd
+                            )
+                            
+                            if not success or self.is_cancelled:
+                                break
+
+                            # 2. Compression to .ffpfsc
+                            print(f"[INFO] Compressing nested PFS image to outer container {current_ffpfs_path.name}...")
+                            success = self.run_command_stream(
+                                mkpfs_cmd_base + ["pack", "file", "--compress", "--version", "PS5", "--inode-bits", "32", str(temp_pfs), str(current_ffpfs_path)],
+                                cwd=mkpfs_cwd
+                            )
+
+                            if not success or self.is_cancelled:
+                                break
+
+                            if keep_pfs:
+                                saved_pfs_path = current_ffpfs_path.parent / f"{title_id}_nested_pfs.dat"
+                                print(f"[INFO] Saving intermediate PFS image to {saved_pfs_path}...")
+                                try:
+                                    shutil.copy2(temp_pfs, saved_pfs_path)
+                                except Exception as e:
+                                    print(f"[WARN] Failed to copy intermediate image: {e}")
+
+                    if not success:
                         break
 
-                    # 2. Compression to .ffpfsc
-                    print(f"[INFO] Compressing nested PFS image to outer container {current_ffpfs_path.name}...")
-                    success = self.run_command_stream(
-                        mkpfs_cmd_base + ["pack", "file", "--compress", "--version", "PS5", "--inode-bits", "32", str(temp_pfs), str(current_ffpfs_path)],
-                        cwd=mkpfs_cwd
-                    )
-
-                    if not success or self.is_cancelled:
-                        break
-
-                    if keep_pfs:
-                        saved_pfs_path = current_ffpfs_path.parent / f"{title_id}_nested_pfs.dat"
-                        print(f"[INFO] Saving intermediate PFS image to {saved_pfs_path}...")
-                        try:
-                            shutil.copy2(temp_pfs, saved_pfs_path)
-                        except Exception as e:
-                            print(f"[WARN] Failed to copy intermediate image: {e}")
-
-            if not success:
-                break
-
-        return success and not self.is_cancelled
+                return success and not self.is_cancelled
+        except Exception:
+            return False
 
     def run_command_stream(self, cmd: list[str], cwd: str | None = None) -> bool:
         print(f"[INFO] Running: {' '.join(cmd)}")
