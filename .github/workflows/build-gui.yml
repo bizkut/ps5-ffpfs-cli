@@ -104,6 +104,7 @@ jobs:
             --hidden-import unrar \
             --hidden-import unrar.rarfile \
             --hidden-import unrar._unrar \
+            --hidden-import multiprocessing \
             --collect-data tkinter \
             --collect-binaries tkinter \
             --collect-data customtkinter \
@@ -134,6 +135,7 @@ jobs:
             --hidden-import unrar \
             --hidden-import unrar.rarfile \
             --hidden-import unrar._unrar \
+            --hidden-import multiprocessing \
             --collect-data tkinter \
             --collect-binaries tkinter \
             --collect-data customtkinter \
@@ -170,6 +172,7 @@ jobs:
             --hidden-import unrar \
             --hidden-import unrar.rarfile \
             --hidden-import unrar._unrar \
+            --hidden-import multiprocessing \
             --collect-data tkinter \
             --collect-binaries tkinter \
             --collect-data customtkinter \
