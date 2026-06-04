@@ -115,12 +115,23 @@ The GUI supports:
 ```bash
 pip install pyinstaller
 pyinstaller --name PS5-FFPFS-CLI --onefile --windowed \
-  --hidden-import tkinter --hidden-import mkpfs.cli \
+  --hidden-import tkinter --hidden-import mkpfs.cli --hidden-import multiprocessing \
   --hidden-import unrar --hidden-import unrar.rarfile --hidden-import unrar._unrar \
   --collect-data tkinter --collect-binaries tkinter \
   --collect-data customtkinter --collect-data mkpfs --collect-binaries mkpfs \
   gui.py
 ```
+
+> **Note for RAR support in frozen builds:** The `unrar` C extension must be placed in the `unrar/` package directory within the bundle so `import unrar._unrar` can locate it. If PyInstaller fails to collect it automatically, copy `_unrar*.so` (or `_unrar*.pyd` on Windows) into the `unrar/` source directory before building.
+
+## Known Issues & Troubleshooting
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| **"No module named '_unrar'" in frozen build** | PyInstaller places the C extension at the bundle root instead of inside `unrar/` | Ensure the `.so`/`.pyd` is in `unrar/` before building, or use the `.spec` file provided in the repo |
+| **GUI spawns multiple instances during compression (macOS/Windows)** | `multiprocessing.Pool` workers re-run the entry point | Fixed in v1.1.5+ — `multiprocessing.freeze_support()` is called at module level |
+| **Console windows flicker on Windows during compression** | Subprocess spawns visible console | Fixed in v1.1.5+ — subprocesses use `CREATE_NO_WINDOW` flag in frozen mode |
+| **Cancel button does nothing in frozen build** | Direct-call path bypassed subprocess termination | Fixed in v1.1.5+ — restored subprocess path with headless env so `terminate()` works |
 
 ## License
 
