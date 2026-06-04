@@ -25,6 +25,9 @@ if len(sys.argv) > 1 and sys.argv[1] == "--mkpfs-internal":
     except Exception as e:
         print(f"[ERROR] Internal MkPFS call failed: {e}", file=sys.stderr)
         sys.exit(1)
+
+import multiprocessing
+import os
 import io
 import re
 import queue
@@ -799,6 +802,11 @@ class PS5ContainerBuilderApp:
         self.root.destroy()
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
+    # Safety net: if a multiprocessing worker somehow reaches here, exit
+    # immediately instead of spawning another GUI instance.
+    if multiprocessing.current_process().name != "MainProcess":
+        sys.exit(0)
     root = ctk.CTk()
     app = PS5ContainerBuilderApp(root)
     root.mainloop()
