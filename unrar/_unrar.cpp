@@ -60,7 +60,9 @@ static PyObject* py_list_files(PyObject* self, PyObject* args, PyObject* kwargs)
         PyList_Append(result, info);
         Py_DECREF(info);
 
+        Py_BEGIN_ALLOW_THREADS
         RARProcessFile(hArc, RAR_SKIP, NULL, NULL);
+        Py_END_ALLOW_THREADS
     }
 
     RARCloseArchive(hArc);
@@ -108,7 +110,9 @@ static PyObject* py_extract_all(PyObject* self, PyObject* args, PyObject* kwargs
             return NULL;
         }
 
+        Py_BEGIN_ALLOW_THREADS
         result = RARProcessFile(hArc, RAR_EXTRACT, const_cast<char*>(dest_path), NULL);
+        Py_END_ALLOW_THREADS
         if (result != ERAR_SUCCESS) {
             RARCloseArchive(hArc);
             if (result == ERAR_MISSING_PASSWORD || result == ERAR_BAD_PASSWORD) {
