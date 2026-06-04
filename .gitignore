@@ -28,3 +28,7 @@ test_data/
 .DS_Store
 .idea/
 .vscode/
+
+# Local project tracking (not for sharing)
+RECOVERY.md
+PLAN.md
