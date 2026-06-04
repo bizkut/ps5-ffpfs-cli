@@ -6,6 +6,15 @@ multiprocessing.freeze_support()  # Required for mp.Pool in PyInstaller frozen b
 import sys
 import os
 
+# Intercept if called as mkpfs sub-command in bundled mode
+if len(sys.argv) > 1 and sys.argv[1] == "--mkpfs-internal":
+    try:
+        from mkpfs.cli import cli_mkpfs_main
+        sys.exit(cli_mkpfs_main(sys.argv[2:]))
+    except Exception as e:
+        print(f"[ERROR] Internal MkPFS call failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
 # Headless mode: if environment variable is set, run mkpfs directly and exit.
 # This prevents tkinter initialization in any subprocess spawned by the frozen exe,
 # even if it bypasses the --mkpfs-internal flag (e.g. mkpfs calling itself recursively).
@@ -15,15 +24,6 @@ if os.environ.get("PS5_FFPFS_HEADLESS"):
         sys.exit(cli_mkpfs_main())
     except Exception as e:
         print(f"[ERROR] Headless MkPFS call failed: {e}", file=sys.stderr)
-        sys.exit(1)
-
-# Intercept if called as mkpfs sub-command in bundled mode
-if len(sys.argv) > 1 and sys.argv[1] == "--mkpfs-internal":
-    try:
-        from mkpfs.cli import cli_mkpfs_main
-        sys.exit(cli_mkpfs_main(sys.argv[2:]))
-    except Exception as e:
-        print(f"[ERROR] Internal MkPFS call failed: {e}", file=sys.stderr)
         sys.exit(1)
 import io
 import re
@@ -672,14 +672,12 @@ class PS5ContainerBuilderApp:
             return False
 
     def run_command_stream(self, cmd: list[str], cwd: str | None = None) -> bool:
-        # In frozen mode, detect if cmd targets our own exe with --mkpfs-internal
-        # and invoke mkpfs directly to avoid spawning subprocess windows
-        if getattr(sys, "frozen", False) and len(cmd) >= 2:
-            if cmd[0] == sys.executable and cmd[1] == "--mkpfs-internal":
-                return self._run_mkpfs_direct(cmd[2:])
-
         print(f"[INFO] Running: {' '.join(cmd)}")
         try:
+            popen_kwargs = {}
+            if sys.platform == "win32":
+                popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
             env = getattr(self, "_headless_env", None)
             self.current_process = subprocess.Popen(
                 cmd,
@@ -689,6 +687,7 @@ class PS5ContainerBuilderApp:
                 bufsize=1,
                 cwd=cwd,
                 env=env,
+                **popen_kwargs,
             )
 
             for line in read_stream_by_lines(self.current_process.stdout):
@@ -700,36 +699,6 @@ class PS5ContainerBuilderApp:
         except Exception as e:
             print(f"[ERROR] Subprocess execution failed: {e}")
             self.current_process = None
-            return False
-
-    def _run_mkpfs_direct(self, mkpfs_args: list[str]) -> bool:
-        """Run mkpfs directly as a Python function (no subprocess).
-
-        Avoids spawning subprocess windows in frozen/PyInstaller mode.
-        Output goes through the already-redirected sys.stdout to GuiLogRedirect.
-        Also sets PS5_FFPFS_HEADLESS so any internal subprocess skips GUI init.
-        """
-        print(f"[INFO] Running mkpfs directly: {' '.join(mkpfs_args)}")
-        try:
-            from mkpfs.cli import cli_mkpfs_main
-            # Set headless env var for any subprocess cli_mkpfs_main might spawn
-            old_env = os.environ.get("PS5_FFPFS_HEADLESS")
-            os.environ["PS5_FFPFS_HEADLESS"] = "1"
-            old_argv = sys.argv
-            try:
-                sys.argv = ["mkpfs"] + mkpfs_args
-                cli_mkpfs_main()
-            except SystemExit as e:
-                return e.code == 0 or e.code is None
-            finally:
-                sys.argv = old_argv
-                if old_env is None:
-                    del os.environ["PS5_FFPFS_HEADLESS"]
-                else:
-                    os.environ["PS5_FFPFS_HEADLESS"] = old_env
-            return True
-        except Exception as e:
-            print(f"[ERROR] MkPFS direct execution failed: {e}")
             return False
 
     def _on_cancel(self) -> None:
@@ -799,7 +768,6 @@ class PS5ContainerBuilderApp:
         self.root.destroy()
 
 if __name__ == "__main__":
-    multiprocessing.freeze_support()
     # Safety net: if a multiprocessing worker somehow reaches here, exit
     # immediately instead of spawning another GUI instance.
     if multiprocessing.current_process().name != "MainProcess":
