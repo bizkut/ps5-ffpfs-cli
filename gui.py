@@ -300,8 +300,12 @@ class PS5ContainerBuilderApp:
     def _browse_file(self) -> None:
         path = filedialog.askopenfilename(
             filetypes=[
-                ("Supported files", "*.exfat;*.zip;*.rar;*.r00;*.001"),
-                ("All files", "*.*")
+                ("exFAT files", "*.exfat"),
+                ("ZIP files", "*.zip"),
+                ("RAR files", "*.rar"),
+                ("RAR parts", "*.r00"),
+                ("001 files", "*.001"),
+                ("All files", "*.*"),
             ]
         )
         if path:
