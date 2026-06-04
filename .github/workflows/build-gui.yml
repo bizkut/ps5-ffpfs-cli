@@ -86,7 +86,6 @@ jobs:
             --collect-data customtkinter \
             --collect-data mkpfs \
             --collect-binaries mkpfs \
-            --collect-binaries unrar \
             --distpath dist-gui \
             gui.py
 
@@ -117,7 +116,6 @@ jobs:
             --collect-data customtkinter \
             --collect-data mkpfs \
             --collect-binaries mkpfs \
-            --collect-binaries unrar \
             --distpath dist-gui \
             gui.py
 
@@ -154,7 +152,6 @@ jobs:
             --collect-data customtkinter \
             --collect-data mkpfs \
             --collect-binaries mkpfs \
-            --collect-binaries unrar \
             --distpath dist-gui \
             gui.py
 
