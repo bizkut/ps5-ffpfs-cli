@@ -1,6 +1,18 @@
 #!/Users/bizkut/Downloads/PS5/.venv/bin/python
 from __future__ import annotations
 import sys
+import os
+
+# Headless mode: if environment variable is set, run mkpfs directly and exit.
+# This prevents tkinter initialization in any subprocess spawned by the frozen exe,
+# even if it bypasses the --mkpfs-internal flag (e.g. mkpfs calling itself recursively).
+if os.environ.get("PS5_FFPFS_HEADLESS"):
+    try:
+        from mkpfs.cli import cli_mkpfs_main
+        sys.exit(cli_mkpfs_main())
+    except Exception as e:
+        print(f"[ERROR] Headless MkPFS call failed: {e}", file=sys.stderr)
+        sys.exit(1)
 
 # Intercept if called as mkpfs sub-command in bundled mode
 if len(sys.argv) > 1 and sys.argv[1] == "--mkpfs-internal":
@@ -10,8 +22,6 @@ if len(sys.argv) > 1 and sys.argv[1] == "--mkpfs-internal":
     except Exception as e:
         print(f"[ERROR] Internal MkPFS call failed: {e}", file=sys.stderr)
         sys.exit(1)
-
-import os
 import io
 import re
 import queue
@@ -487,6 +497,9 @@ class PS5ContainerBuilderApp:
         if getattr(sys, "frozen", False):
             mkpfs_cmd_base = [sys.executable, "--mkpfs-internal"]
             mkpfs_cwd = None
+            # Set headless env var so any subprocess (even internal mkpfs ones) skips GUI init
+            self._headless_env = os.environ.copy()
+            self._headless_env["PS5_FFPFS_HEADLESS"] = "1"
             print("[INFO] Running in packaged/frozen environment. Using internal MkPFS bundle.")
 
         # 1. Prioritize any local workspace found in sibling folders containing a mkpfs package
@@ -664,18 +677,20 @@ class PS5ContainerBuilderApp:
 
         print(f"[INFO] Running: {' '.join(cmd)}")
         try:
+            env = getattr(self, "_headless_env", None)
             self.current_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
-                cwd=cwd
+                cwd=cwd,
+                env=env,
             )
-            
+
             for line in read_stream_by_lines(self.current_process.stdout):
                 print(line)
-                
+
             code = self.current_process.wait()
             self.current_process = None
             return code == 0
@@ -686,13 +701,17 @@ class PS5ContainerBuilderApp:
 
     def _run_mkpfs_direct(self, mkpfs_args: list[str]) -> bool:
         """Run mkpfs directly as a Python function (no subprocess).
-        
+
         Avoids spawning subprocess windows in frozen/PyInstaller mode.
         Output goes through the already-redirected sys.stdout to GuiLogRedirect.
+        Also sets PS5_FFPFS_HEADLESS so any internal subprocess skips GUI init.
         """
         print(f"[INFO] Running mkpfs directly: {' '.join(mkpfs_args)}")
         try:
             from mkpfs.cli import cli_mkpfs_main
+            # Set headless env var for any subprocess cli_mkpfs_main might spawn
+            old_env = os.environ.get("PS5_FFPFS_HEADLESS")
+            os.environ["PS5_FFPFS_HEADLESS"] = "1"
             old_argv = sys.argv
             try:
                 sys.argv = ["mkpfs"] + mkpfs_args
@@ -701,6 +720,10 @@ class PS5ContainerBuilderApp:
                 return e.code == 0 or e.code is None
             finally:
                 sys.argv = old_argv
+                if old_env is None:
+                    del os.environ["PS5_FFPFS_HEADLESS"]
+                else:
+                    os.environ["PS5_FFPFS_HEADLESS"] = old_env
             return True
         except Exception as e:
             print(f"[ERROR] MkPFS direct execution failed: {e}")
