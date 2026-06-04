@@ -1,5 +1,8 @@
 #!/Users/bizkut/Downloads/PS5/.venv/bin/python
 from __future__ import annotations
+
+import multiprocessing as _mp
+_mp.freeze_support()  # Required for mp.Pool in PyInstaller frozen builds
 import sys
 import os
 
