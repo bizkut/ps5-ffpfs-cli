@@ -74,6 +74,16 @@ def find_game_items(path: Path, batch: bool = False) -> list[Path]:
         if eboot_path.is_file() and param_path.is_file():
             valid_items.append(curr_dir)
             
+    # Deduplicate (a path could appear in both exfat and folder scans)
+    seen = set()
+    deduped = []
+    for item in valid_items:
+        resolved = item.resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            deduped.append(item)
+    valid_items = deduped
+
     if len(valid_items) == 0:
         print(f"[ERROR] Could not find any valid game folders or .exfat files in {path}.")
         sys.exit(1)
@@ -166,7 +176,7 @@ def main():
         sys.exit(1)
         
     _is_zip = lambda p: p.name.lower().endswith(".zip")
-    _is_rar = lambda p: any(p.name.lower().endswith(ext) for ext in (".rar", ".r00", ".001", "part1.rar"))
+    _is_rar = lambda p: any(p.name.lower().endswith(ext) for ext in (".rar", ".r00"))
     is_archive = _is_zip(game_folder) or _is_rar(game_folder)
     
     import contextlib
@@ -185,7 +195,7 @@ def main():
                             except ValueError:
                                 print(f"[ERROR] ZIP path traversal detected: {member.filename}")
                                 sys.exit(1)
-                        zf.extractall(tmpdir)
+                        zf.extractall(tmpdir, pwd=args.password.encode() if args.password else None)
                     yield Path(tmpdir)
                 except (zipfile.BadZipFile, RuntimeError) as exc:
                     print(f"[ERROR] ZIP extraction failed: {exc}")
@@ -230,16 +240,17 @@ def main():
             print("[INFO] Running in packaged/frozen environment. Using internal MkPFS bundle.")
         
         # 1. Prioritize any local workspace found in sibling folders containing a mkpfs package
-        parent_dir = Path(__file__).resolve().parent.parent
-        try:
-            for sibling in parent_dir.iterdir():
-                if sibling.is_dir() and (sibling / "mkpfs" / "__main__.py").is_file():
-                    mkpfs_cmd_base = [sys.executable, "-m", "mkpfs"]
-                    mkpfs_cwd = str(sibling)
-                    print(f"[INFO] Using local workspace directory at {sibling}")
-                    break
-        except Exception:
-            pass
+        if mkpfs_cmd_base is None:
+            parent_dir = Path(__file__).resolve().parent.parent
+            try:
+                for sibling in parent_dir.iterdir():
+                    if sibling.is_dir() and (sibling / "mkpfs" / "__main__.py").is_file():
+                        mkpfs_cmd_base = [sys.executable, "-m", "mkpfs"]
+                        mkpfs_cwd = str(sibling)
+                        print(f"[INFO] Using local workspace directory at {sibling}")
+                        break
+            except Exception:
+                pass
         
         # 2. Try system PATH
         if mkpfs_cmd_base is None and shutil.which("mkpfs"):

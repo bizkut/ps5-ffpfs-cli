@@ -72,7 +72,7 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: bash
         run: |
-          uv run pyinstaller \
+          pyinstaller \
             --name PS5-FFPFS-CLI \
             --onefile \
             --windowed \
@@ -86,6 +86,7 @@ jobs:
             --collect-data customtkinter \
             --collect-data mkpfs \
             --collect-binaries mkpfs \
+            --collect-binaries unrar \
             --distpath dist-gui \
             gui.py
 
@@ -102,7 +103,7 @@ jobs:
       - name: Build (macOS)
         if: startsWith(matrix.os, 'macos')
         run: |
-          uv run pyinstaller \
+          pyinstaller \
             --name PS5-FFPFS-CLI \
             --windowed \
             --osx-bundle-identifier com.bizkut.ps5-ffpfs-cli \
@@ -116,6 +117,7 @@ jobs:
             --collect-data customtkinter \
             --collect-data mkpfs \
             --collect-binaries mkpfs \
+            --collect-binaries unrar \
             --distpath dist-gui \
             gui.py
 
@@ -138,7 +140,7 @@ jobs:
       - name: Build (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: |
-          uv run pyinstaller \
+          pyinstaller \
             --name PS5-FFPFS-CLI \
             --onefile \
             --windowed \
@@ -152,6 +154,7 @@ jobs:
             --collect-data customtkinter \
             --collect-data mkpfs \
             --collect-binaries mkpfs \
+            --collect-binaries unrar \
             --distpath dist-gui \
             gui.py
 
@@ -177,7 +180,7 @@ jobs:
           chmod +x linuxdeploy
           ./linuxdeploy --appdir "$appdir" --output appimage
 
-          mv PS5-FFPFS-CLI-x86_64.AppImage "${{ matrix.artifact }}"
+          mv PS5-FFPFS-CLI*.AppImage "${{ matrix.artifact }}"
           echo "artifact_name=${{ matrix.artifact }}" >> "$GITHUB_ENV"
 
       - name: Generate checksum
@@ -186,7 +189,7 @@ jobs:
           python -c "from pathlib import Path; import hashlib; path = Path('${{ env.artifact_name }}'); digest = hashlib.sha256(path.read_bytes()).hexdigest(); Path(str(path) + '.sha256').write_text(f'{digest}  {path.name}\n')"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
           path: |
@@ -194,7 +197,7 @@ jobs:
             ${{ env.artifact_name }}.sha256
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.upload_release && startsWith(github.ref, 'refs/tags/v'))
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && github.event.inputs.upload_release == 'true' && startsWith(github.ref, 'refs/tags/v'))
     needs: build-gui
     runs-on: ubuntu-latest
     steps:
@@ -203,7 +206,7 @@ jobs:
           fetch-depth: 0
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           path: artifacts/
           merge-multiple: true
