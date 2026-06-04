@@ -27,19 +27,25 @@ cd ps5-ffpfs-cli
 ## Usage
 
 ```bash
-python3 cli.py [game_folder] [output_dir_or_file] [options]
+python3 cli.py [game_folder_or_exfat_file] [output_dir_or_file] [options]
 ```
 
 ### Examples
 
 **Standard Process (Nested PFS -> .ffpfsc):**
-Scans for the game inside the given path, builds a nested PFS image (`pfs_image.dat`), compresses it via `mkpfs` into `.ffpfsc`, and cleans up the intermediate files. It outputs to the current directory.
+Scans for the game folder inside the given path, builds a nested PFS image (`pfs_image.dat`), compresses it via `mkpfs` into `.ffpfsc`, and cleans up the intermediate files. It outputs to the current directory.
 ```bash
 python3 cli.py /path/to/GameFolder
 ```
 
+**Convert Existing exFAT (exFAT -> .ffpfsc):**
+Directly converts an existing `.exfat` file to `.ffpfsc` container format using `mkpfs`, skipping the nested PFS creation and leaving the original `.exfat` file intact.
+```bash
+python3 cli.py /path/to/GameImage.exfat
+```
+
 **Batch Processing:**
-Scan an entire directory for multiple games and pack all of them into the specified output directory using their Title IDs.
+Scan an entire directory for multiple game folders and `.exfat` files, packing/converting all of them into the specified output directory using their Title IDs.
 ```bash
 python3 cli.py /path/to/AllGames /path/to/OutputFolder --batch
 ```

@@ -5,59 +5,82 @@ import argparse
 import subprocess
 import shutil
 import json
+import re
 import tempfile
 from pathlib import Path
 
-def get_title_id(game_folder: Path) -> str:
-    param_path = game_folder / "sce_sys" / "param.json"
-    fallback = game_folder.name
-    
-    try:
-        if param_path.is_file():
-            with open(param_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                if "titleId" in data:
-                    return data["titleId"]
-                if "title_id" in data:
-                    return data["title_id"]
-    except Exception as e:
-        print(f"[WARN] Could not parse param.json for title ID: {e}")
-        
-    for suffix in ["-app0", "-app", "-patch0", "-patch"]:
-        if fallback.endswith(suffix):
-            return fallback[:-len(suffix)]
-            
+def get_title_id_from_name(name: str) -> str:
+    # Look for standard PS4/PS5 title ID formats like PPSA12345 or CUSA12345
+    match = re.search(r'\b([A-Z]{4}\d{5})\b', name, re.IGNORECASE)
+    if match:
+        return match.group(1).upper()
+    # Otherwise fallback to clean name
+    fallback = name
+    for suffix in [".exfat", "-app0", "-app", "-patch0", "-patch"]:
+        if fallback.lower().endswith(suffix):
+            fallback = fallback[:-len(suffix)]
     return fallback
 
-def find_game_folders(folder_path: Path, batch: bool = False) -> list[Path]:
-    print(f"[INFO] Scanning for actual game folder(s) in {folder_path}...")
-    valid_folders = []
+def get_title_id(item_path: Path) -> str:
+    if item_path.is_dir():
+        param_path = item_path / "sce_sys" / "param.json"
+        try:
+            if param_path.is_file():
+                with open(param_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    if "titleId" in data:
+                        return data["titleId"]
+                    if "title_id" in data:
+                        return data["title_id"]
+        except Exception as e:
+            print(f"[WARN] Could not parse param.json for title ID: {e}")
+            
+    return get_title_id_from_name(item_path.name)
+
+def find_game_items(path: Path, batch: bool = False) -> list[Path]:
+    if path.is_file():
+        if path.suffix.lower() == '.exfat':
+            return [path]
+        else:
+            print(f"[ERROR] Unsupported file type: {path.name}. Only .exfat files are supported.")
+            sys.exit(1)
+            
+    print(f"[INFO] Scanning for game folder(s) and .exfat file(s) in {path}...")
+    valid_items = []
     
-    for dirpath, _, _ in os.walk(folder_path):
-        curr = Path(dirpath)
-        eboot_path = curr / "eboot.bin"
-        param_path = curr / "sce_sys" / "param.json"
+    # 1. Scan for .exfat files
+    for dirpath, _, filenames in os.walk(path):
+        curr_dir = Path(dirpath)
+        for f in filenames:
+            if f.lower().endswith('.exfat'):
+                valid_items.append(curr_dir / f)
+                
+    # 2. Scan for game folders
+    for dirpath, _, _ in os.walk(path):
+        curr_dir = Path(dirpath)
+        eboot_path = curr_dir / "eboot.bin"
+        param_path = curr_dir / "sce_sys" / "param.json"
         
         if eboot_path.is_file() and param_path.is_file():
-            valid_folders.append(curr)
+            valid_items.append(curr_dir)
             
-    if len(valid_folders) == 0:
-        print(f"[ERROR] Could not find eboot.bin and sce_sys/param.json in {folder_path} or its subdirectories.")
+    if len(valid_items) == 0:
+        print(f"[ERROR] Could not find any valid game folders or .exfat files in {path}.")
         sys.exit(1)
         
-    if not batch and len(valid_folders) > 1:
-        print(f"[ERROR] Multiple game folders found in {folder_path}:")
-        for f in valid_folders:
-            print(f"  - {f}")
-        print("Please specify a more specific game folder or use --batch to process all.")
+    if not batch and len(valid_items) > 1:
+        print(f"[ERROR] Multiple game folders/files found in {path}:")
+        for item in valid_items:
+            print(f"  - {item}")
+        print("Please specify a more specific folder/file or use --batch to process all.")
         sys.exit(1)
         
     if not batch:
-        print(f"[OK] Found game folder structure at {valid_folders[0]}")
+        print(f"[OK] Found game source at {valid_items[0]}")
     else:
-        print(f"[OK] Found {len(valid_folders)} game folder(s) for batch processing.")
+        print(f"[OK] Found {len(valid_items)} game item(s) for batch processing.")
         
-    return valid_folders
+    return valid_items
 
 def pack_folder_uncompressed(game_folder: Path, pfs_path: Path, mkpfs_cmd_base: list[str], mkpfs_cwd: str | None):
     print(f"[INFO] Packing folder {game_folder.name} to uncompressed PFS image {pfs_path.name}...")
@@ -75,15 +98,15 @@ def pack_folder_uncompressed(game_folder: Path, pfs_path: Path, mkpfs_cmd_base: 
     subprocess.run(cmd, cwd=mkpfs_cwd, check=True)
     print(f"[OK] Uncompressed PFS creation complete: {pfs_path}")
 
-def compress_pfs_to_ffpfsc(pfs_path: Path, ffpfsc_path: Path, mkpfs_cmd_base: list[str], mkpfs_cwd: str | None):
-    print(f"[INFO] Compressing nested PFS image {pfs_path.name} to outer container {ffpfsc_path.name}...")
+def compress_file_to_ffpfsc(source_file: Path, ffpfsc_path: Path, mkpfs_cmd_base: list[str], mkpfs_cwd: str | None):
+    print(f"[INFO] Compressing {source_file.name} to outer container {ffpfsc_path.name} using MkPFS...")
     cmd = mkpfs_cmd_base + [
         "pack", "file",
         "--compress",
         "--version", "PS5",
         "--inode-bits", "32",
         "--verify",
-        str(pfs_path),
+        str(source_file),
         str(ffpfsc_path)
     ]
     print(f"[INFO] Running: {' '.join(cmd)}")
@@ -91,22 +114,22 @@ def compress_pfs_to_ffpfsc(pfs_path: Path, ffpfsc_path: Path, mkpfs_cmd_base: li
     print(f"[OK] Compression complete: {ffpfsc_path}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Create a compressed PFS container (.ffpfsc) enclosing a nested PFS image from a PS5 game folder.")
-    parser.add_argument("game_folder", type=str, help="Path to the source game folder")
+    parser = argparse.ArgumentParser(description="Create a compressed PFS container (.ffpfsc) enclosing a nested PFS or exFAT image from a PS5 game folder or .exfat file.")
+    parser.add_argument("game_folder", type=str, help="Path to the source game folder or existing .exfat file")
     parser.add_argument("output", type=str, nargs='?', default=".", help="Path to the output .ffpfsc file or directory (defaults to current directory)")
     parser.add_argument("--keep-pfs", action="store_true", help="Keep the intermediate nested PFS image (saved as <title_id>_nested_pfs.dat)")
-    parser.add_argument("--batch", action="store_true", help="Process multiple game folders into multiple images. 'output' will be treated as the output directory.")
+    parser.add_argument("--batch", action="store_true", help="Process multiple game folders/files into multiple images. 'output' will be treated as the output directory.")
     
     args = parser.parse_args()
     
     game_folder = Path(args.game_folder).resolve()
     ffpfs_path = Path(args.output).resolve()
     
-    if not game_folder.is_dir():
-        print(f"[ERROR] Game folder does not exist: {game_folder}")
+    if not game_folder.exists():
+        print(f"[ERROR] Source path does not exist: {game_folder}")
         sys.exit(1)
         
-    game_folders = find_game_folders(game_folder, args.batch)
+    game_items = find_game_items(game_folder, args.batch)
     
     if args.batch:
         if not ffpfs_path.exists():
@@ -148,8 +171,8 @@ def main():
         
     ext = ".ffpfsc"
     
-    for gf in game_folders:
-        title_id = get_title_id(gf)
+    for item in game_items:
+        title_id = get_title_id(item)
         
         if args.batch or ffpfs_path.is_dir():
             current_ffpfs_path = ffpfs_path / f"{title_id}{ext}"
@@ -157,21 +180,26 @@ def main():
             current_ffpfs_path = ffpfs_path.with_suffix(ext)
         
         if args.batch:
-            print(f"\n[INFO] --- Processing batch item: {title_id} ({gf.name}) ---")
+            print(f"\n[INFO] --- Processing batch item: {title_id} ({item.name}) ---")
             
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_pfs = Path(temp_dir) / "pfs_image.dat"
-            
-            # 1. Pack folder into the uncompressed PFS image
-            pack_folder_uncompressed(gf, temp_pfs, mkpfs_cmd_base, mkpfs_cwd)
-            
-            # 2. Compress that PFS image file into the final .ffpfsc
-            compress_pfs_to_ffpfsc(temp_pfs, current_ffpfs_path, mkpfs_cmd_base, mkpfs_cwd)
-            
-            if args.keep_pfs:
-                saved_pfs_path = current_ffpfs_path.parent / f"{title_id}_nested_pfs.dat"
-                print(f"[INFO] Saving intermediate PFS image to {saved_pfs_path}...")
-                shutil.copy2(temp_pfs, saved_pfs_path)
+        if item.is_file() and item.suffix.lower() == '.exfat':
+            # Direct exFAT file to compressed PFS (.ffpfsc) conversion
+            compress_file_to_ffpfsc(item, current_ffpfs_path, mkpfs_cmd_base, mkpfs_cwd)
+        else:
+            # Game folder: pack to uncompressed PFS first, then compress to .ffpfsc
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_pfs = Path(temp_dir) / "pfs_image.dat"
+                
+                # 1. Pack folder into the uncompressed PFS image
+                pack_folder_uncompressed(item, temp_pfs, mkpfs_cmd_base, mkpfs_cwd)
+                
+                # 2. Compress that PFS image file into the final .ffpfsc
+                compress_file_to_ffpfsc(temp_pfs, current_ffpfs_path, mkpfs_cmd_base, mkpfs_cwd)
+                
+                if args.keep_pfs:
+                    saved_pfs_path = current_ffpfs_path.parent / f"{title_id}_nested_pfs.dat"
+                    print(f"[INFO] Saving intermediate PFS image to {saved_pfs_path}...")
+                    shutil.copy2(temp_pfs, saved_pfs_path)
                 
     print("\n[SUCCESS] All operations completed successfully!")
 
