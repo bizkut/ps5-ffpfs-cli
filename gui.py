@@ -656,6 +656,12 @@ class PS5ContainerBuilderApp:
             return False
 
     def run_command_stream(self, cmd: list[str], cwd: str | None = None) -> bool:
+        # In frozen mode, detect if cmd targets our own exe with --mkpfs-internal
+        # and invoke mkpfs directly to avoid spawning subprocess windows
+        if getattr(sys, "frozen", False) and len(cmd) >= 2:
+            if cmd[0] == sys.executable and cmd[1] == "--mkpfs-internal":
+                return self._run_mkpfs_direct(cmd[2:])
+
         print(f"[INFO] Running: {' '.join(cmd)}")
         try:
             self.current_process = subprocess.Popen(
@@ -676,6 +682,28 @@ class PS5ContainerBuilderApp:
         except Exception as e:
             print(f"[ERROR] Subprocess execution failed: {e}")
             self.current_process = None
+            return False
+
+    def _run_mkpfs_direct(self, mkpfs_args: list[str]) -> bool:
+        """Run mkpfs directly as a Python function (no subprocess).
+        
+        Avoids spawning subprocess windows in frozen/PyInstaller mode.
+        Output goes through the already-redirected sys.stdout to GuiLogRedirect.
+        """
+        print(f"[INFO] Running mkpfs directly: {' '.join(mkpfs_args)}")
+        try:
+            from mkpfs.cli import cli_mkpfs_main
+            old_argv = sys.argv
+            try:
+                sys.argv = ["mkpfs"] + mkpfs_args
+                cli_mkpfs_main()
+            except SystemExit as e:
+                return e.code == 0 or e.code is None
+            finally:
+                sys.argv = old_argv
+            return True
+        except Exception as e:
+            print(f"[ERROR] MkPFS direct execution failed: {e}")
             return False
 
     def _on_cancel(self) -> None:
