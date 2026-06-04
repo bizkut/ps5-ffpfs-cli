@@ -105,7 +105,6 @@ def compress_file_to_ffpfsc(source_file: Path, ffpfsc_path: Path, mkpfs_cmd_base
         "--compress",
         "--version", "PS5",
         "--inode-bits", "32",
-        "--verify",
         str(source_file),
         str(ffpfsc_path)
     ]
@@ -115,13 +114,39 @@ def compress_file_to_ffpfsc(source_file: Path, ffpfsc_path: Path, mkpfs_cmd_base
 
 def main():
     parser = argparse.ArgumentParser(description="Create a compressed PFS container (.ffpfsc) enclosing a nested PFS or exFAT image from a PS5 game folder or .exfat file.")
-    parser.add_argument("game_folder", type=str, help="Path to the source game folder or existing .exfat file")
+    parser.add_argument("game_folder", type=str, nargs='?', help="Path to the source game folder or existing .exfat file")
     parser.add_argument("output", type=str, nargs='?', default=".", help="Path to the output .ffpfsc file or directory (defaults to current directory)")
     parser.add_argument("--keep-pfs", action="store_true", help="Keep the intermediate nested PFS image (saved as <title_id>_nested_pfs.dat)")
     parser.add_argument("--batch", action="store_true", help="Process multiple game folders/files into multiple images. 'output' will be treated as the output directory.")
+    parser.add_argument("--gui", action="store_true", help="Launch the graphical user interface")
+    parser.add_argument("-f", "--force", "--overwrite", dest="overwrite", action="store_true", help="Overwrite existing files without prompting")
     
     args = parser.parse_args()
     
+    if args.gui:
+        try:
+            import customtkinter as ctk
+            from gui import PS5ContainerBuilderApp
+            root = ctk.CTk()
+            app = PS5ContainerBuilderApp(root)
+            if args.game_folder:
+                app.source_var.set(str(Path(args.game_folder).resolve()))
+            if args.output:
+                app.output_var.set(str(Path(args.output).resolve()))
+            if args.keep_pfs:
+                app.keep_pfs_var.set(True)
+            if args.batch:
+                app.batch_var.set(True)
+            root.mainloop()
+            sys.exit(0)
+        except ImportError:
+            print("[ERROR] GUI requires 'customtkinter'. Please install it: pip install customtkinter")
+            sys.exit(1)
+
+    if not args.game_folder:
+        parser.print_help()
+        sys.exit(1)
+        
     game_folder = Path(args.game_folder).resolve()
     ffpfs_path = Path(args.output).resolve()
     
@@ -181,6 +206,34 @@ def main():
         
         if args.batch:
             print(f"\n[INFO] --- Processing batch item: {title_id} ({item.name}) ---")
+            
+        if current_ffpfs_path.exists():
+            if args.overwrite:
+                print(f"[WARN] Output file already exists. Overwriting: {current_ffpfs_path}")
+                try:
+                    current_ffpfs_path.unlink()
+                except Exception as e:
+                    print(f"[ERROR] Failed to remove existing output file: {e}")
+                    sys.exit(1)
+            else:
+                print(f"[WARN] Output file already exists: {current_ffpfs_path}")
+                try:
+                    if sys.stdin.isatty():
+                        response = input("Overwrite existing file? [y/N]: ").strip().lower()
+                    else:
+                        print("[INFO] Non-interactive shell detected. Skipping overwrite.")
+                        response = 'n'
+                except (KeyboardInterrupt, EOFError):
+                    print("\n[INFO] Cancelled by user.")
+                    sys.exit(0)
+                if response not in ('y', 'yes'):
+                    print(f"[INFO] Skipping: {current_ffpfs_path.name}")
+                    continue
+                try:
+                    current_ffpfs_path.unlink()
+                except Exception as e:
+                    print(f"[ERROR] Failed to remove existing output file: {e}")
+                    sys.exit(1)
             
         if item.is_file() and item.suffix.lower() == '.exfat':
             # Direct exFAT file to compressed PFS (.ffpfsc) conversion
