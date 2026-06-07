@@ -38,6 +38,7 @@ if os.environ.get("PS5_FFPFS_HEADLESS"):
         print(f"[ERROR] Headless MkPFS call failed: {e}", file=sys.stderr)
         sys.exit(1)
 import io
+import contextlib
 import re
 import queue
 import threading
@@ -83,6 +84,22 @@ def read_stream_by_lines(stream):
             yield stripped
     if last_cr_line is not None:
         yield last_cr_line
+
+@contextlib.contextmanager
+def managed_temp_dir(user_temp_dir: str | None = None):
+    """Create a temporary directory, optionally inside a user-specified directory."""
+    if user_temp_dir:
+        import tempfile
+        path = tempfile.mkdtemp(dir=user_temp_dir)
+        try:
+            yield Path(path)
+        finally:
+            import shutil
+            shutil.rmtree(path)
+    else:
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            yield Path(td)
 
 class GuiLogRedirect(io.TextIOBase):
     """Thread-safe redirector that feeds a Tkinter text widget via a queue."""
@@ -220,6 +237,25 @@ class PS5ContainerBuilderApp:
         )
         browse_out_btn.grid(row=1, column=2, padx=12, pady=10, sticky="w")
         
+        # Temp dir Row
+        ctk.CTkLabel(fields_frame, text="Temp dir:", font=ctk.CTkFont(weight="bold")).grid(
+            row=2, column=0, padx=12, pady=10, sticky="e"
+        )
+        self.temp_dir_var = tk.StringVar()
+        self.temp_dir_entry = ctk.CTkEntry(
+            fields_frame,
+            textvariable=self.temp_dir_var,
+            placeholder_text="Optional: directory for temporary PFS images (defaults to system temp)"
+        )
+        self.temp_dir_entry.grid(row=2, column=1, padx=6, pady=10, sticky="ew")
+        browse_temp_btn = ctk.CTkButton(
+            fields_frame,
+            text="Browse",
+            width=110,
+            command=self._browse_temp_dir
+        )
+        browse_temp_btn.grid(row=2, column=2, padx=12, pady=10, sticky="w")
+        
         # Password Field (Hidden by default)
         self.password_label = ctk.CTkLabel(fields_frame, text="Password:", font=ctk.CTkFont(weight="bold"))
         self.password_var = tk.StringVar()
@@ -232,7 +268,7 @@ class PS5ContainerBuilderApp:
         
         # Options Row
         self.options_frame = ctk.CTkFrame(fields_frame, fg_color="transparent")
-        self.options_frame.grid(row=2, column=1, columnspan=2, padx=6, pady=6, sticky="w")
+        self.options_frame.grid(row=3, column=1, columnspan=2, padx=6, pady=6, sticky="w")
         
         self.keep_pfs_var = tk.BooleanVar(value=False)
         self.keep_pfs_checkbox = ctk.CTkCheckBox(
@@ -328,14 +364,14 @@ class PS5ContainerBuilderApp:
         src = self.source_var.get().lower()
         # Supported archive extensions from mkpfs
         if any(src.endswith(ext) for ext in (".zip", ".rar", ".r00", ".001", "part1.rar")):
-            self.password_label.grid(row=2, column=0, padx=12, pady=10, sticky="e")
-            self.password_entry.grid(row=2, column=1, padx=6, pady=10, sticky="w")
-            self.options_frame.grid(row=3, column=1, columnspan=2, padx=6, pady=6, sticky="w")
+            self.password_label.grid(row=3, column=0, padx=12, pady=10, sticky="e")
+            self.password_entry.grid(row=3, column=1, padx=6, pady=10, sticky="w")
+            self.options_frame.grid(row=4, column=1, columnspan=2, padx=6, pady=6, sticky="w")
         else:
             self.password_label.grid_forget()
             self.password_entry.grid_forget()
             self.password_var.set("")
-            self.options_frame.grid(row=2, column=1, columnspan=2, padx=6, pady=6, sticky="w")
+            self.options_frame.grid(row=3, column=1, columnspan=2, padx=6, pady=6, sticky="w")
 
     def _browse_folder(self) -> None:
         initial = self.source_var.get() or str(Path(".").resolve())
@@ -369,6 +405,12 @@ class PS5ContainerBuilderApp:
         path = filedialog.askdirectory(initialdir=initial)
         if path:
             self.output_var.set(path)
+    
+    def _browse_temp_dir(self) -> None:
+        initial = self.temp_dir_var.get() or str(Path(".").resolve())
+        path = filedialog.askdirectory(initialdir=initial)
+        if path:
+            self.temp_dir_var.set(path)
 
     def enqueue_log(self, text: str, tag: str = "info") -> None:
         for match in PROGRESS_LINE_RE.finditer(text):
@@ -603,7 +645,6 @@ class PS5ContainerBuilderApp:
         _is_rar = lambda p: any(p.name.lower().endswith(ext) for ext in (".rar", ".r00"))
         is_archive = _is_zip(source_path) or _is_rar(source_path)
         
-        import contextlib
         @contextlib.contextmanager
         def prepare_source_path(path: Path):
             if _is_zip(path):
@@ -700,7 +741,8 @@ class PS5ContainerBuilderApp:
                         )
                     else:
                         # Game folder packing
-                        with tempfile.TemporaryDirectory() as temp_dir:
+                        temp_dir_str = self.temp_dir_var.get().strip() or None
+                        with managed_temp_dir(temp_dir_str) as temp_dir:
                             temp_pfs = Path(temp_dir) / "pfs_image.dat"
 
                             # 1. Uncompressed PFS build

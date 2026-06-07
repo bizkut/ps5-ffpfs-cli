@@ -18,6 +18,7 @@ import argparse
 import subprocess
 import shutil
 import json
+import contextlib
 import re
 import tempfile
 from pathlib import Path
@@ -135,6 +136,19 @@ def compress_file_to_ffpfsc(source_file: Path, ffpfsc_path: Path, mkpfs_cmd_base
     subprocess.run(cmd, cwd=mkpfs_cwd, check=True)
     print(f"[OK] Compression complete: {ffpfsc_path}")
 
+@contextlib.contextmanager
+def managed_temp_dir(user_temp_dir: str | None = None):
+    """Create a temporary directory, optionally inside a user-specified directory."""
+    if user_temp_dir:
+        path = tempfile.mkdtemp(dir=user_temp_dir)
+        try:
+            yield Path(path)
+        finally:
+            shutil.rmtree(path)
+    else:
+        with tempfile.TemporaryDirectory() as td:
+            yield Path(td)
+
 def main():
     parser = argparse.ArgumentParser(description="Create a compressed PFS container (.ffpfsc) enclosing a nested PFS or exFAT image from a PS5 game folder or .exfat file.")
     parser.add_argument("game_folder", type=str, nargs='?', help="Path to the source game folder or existing .exfat file")
@@ -145,6 +159,7 @@ def main():
     parser.add_argument("--verify", action="store_true", help="Verify the PFS image integrity after creation (can be very slow for large files)")
     parser.add_argument("-f", "--force", "--overwrite", dest="overwrite", action="store_true", help="Overwrite existing files without prompting")
     parser.add_argument("--password", type=str, help="Optional password for ZIP/RAR archives")
+    parser.add_argument("--temp-dir", type=str, help="Directory for temporary PFS images during processing (defaults to system temp)")
     
     args = parser.parse_args()
     
@@ -164,6 +179,8 @@ def main():
                 app.batch_var.set(True)
             if args.verify:
                 app.verify_var.set(True)
+            if args.temp_dir:
+                app.temp_dir_var.set(str(Path(args.temp_dir).resolve()))
             root.mainloop()
             sys.exit(0)
         except ImportError:
@@ -185,7 +202,6 @@ def main():
     _is_rar = lambda p: any(p.name.lower().endswith(ext) for ext in (".rar", ".r00"))
     is_archive = _is_zip(game_folder) or _is_rar(game_folder)
     
-    import contextlib
     @contextlib.contextmanager
     def prepare_source_path(path: Path):
         if _is_zip(path):
@@ -319,7 +335,7 @@ def main():
                 compress_file_to_ffpfsc(item, current_ffpfs_path, mkpfs_cmd_base, mkpfs_cwd)
             else:
                 # Game folder: pack to uncompressed PFS first, then compress to .ffpfsc
-                with tempfile.TemporaryDirectory() as temp_dir:
+                with managed_temp_dir(args.temp_dir) as temp_dir:
                     temp_pfs = Path(temp_dir) / "pfs_image.dat"
                     
                     # 1. Pack folder into the uncompressed PFS image

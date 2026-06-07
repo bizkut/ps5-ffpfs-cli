@@ -55,6 +55,7 @@ python3 cli.py [game_folder_or_archive_or_exfat] [output] [options]
 | `--gui` | Launch the graphical user interface |
 | `-f`, `--force`, `--overwrite` | Overwrite existing files without prompting |
 | `--password PASSWORD` | Password for ZIP/RAR archives |
+| `--temp-dir DIR` | Custom directory for temporary PFS images (defaults to system temp) |
 
 ### Examples
 
@@ -88,6 +89,11 @@ python3 cli.py /path/to/AllGames /path/to/OutputFolder --batch
 python3 cli.py /path/to/GameFolder --keep-pfs
 ```
 
+**Custom Temp Directory (useful for large games on SSDs):**
+```bash
+python3 cli.py /path/to/GameFolder --temp-dir /fast/ssd/tmp
+```
+
 **Launch GUI:**
 ```bash
 python3 cli.py --gui
@@ -106,6 +112,7 @@ The GUI supports:
 - Password input for protected archives
 - Batch folder selection
 - Output directory selection
+- **Temp directory selection** for intermediate PFS images (useful when processing large games on SSDs)
 - Progress feedback during packing
 
 ## Building from Source
